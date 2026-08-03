@@ -1,0 +1,5 @@
+This is a test document.
+
+It has multiple paragraphs.
+
+Each paragraph will become part of the knowledge base.
