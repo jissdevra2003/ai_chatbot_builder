@@ -1,0 +1,16 @@
+FastAPI Document Ingestion Pipeline Test.
+This document explains the architecture of the AI Chatbot Builder system.
+The system uses FastAPI for async web endpoints, Neon PostgreSQL for persistent metadata storage, and ChromaDB powered by Google Gemini embeddings (gemini-embedding-001) for vector similarity search.
+Background tasks ensure document uploads return in less than 200 milliseconds.FastAPI Document Ingestion Pipeline Test.
+This document explains the architecture of the AI Chatbot Builder system.
+The system uses FastAPI for async web endpoints, Neon PostgreSQL for persistent metadata storage, and ChromaDB powered by Google Gemini embeddings (gemini-embedding-001) for vector similarity search.
+Background tasks ensure document uploads return in less than 200 milliseconds.FastAPI Document Ingestion Pipeline Test.
+This document explains the architecture of the AI Chatbot Builder system.
+The system uses FastAPI for async web endpoints, Neon PostgreSQL for persistent metadata storage, and ChromaDB powered by Google Gemini embeddings (gemini-embedding-001) for vector similarity search.
+Background tasks ensure document uploads return in less than 200 milliseconds.FastAPI Document Ingestion Pipeline Test.
+This document explains the architecture of the AI Chatbot Builder system.
+The system uses FastAPI for async web endpoints, Neon PostgreSQL for persistent metadata storage, and ChromaDB powered by Google Gemini embeddings (gemini-embedding-001) for vector similarity search.
+Background tasks ensure document uploads return in less than 200 milliseconds.FastAPI Document Ingestion Pipeline Test.
+This document explains the architecture of the AI Chatbot Builder system.
+The system uses FastAPI for async web endpoints, Neon PostgreSQL for persistent metadata storage, and ChromaDB powered by Google Gemini embeddings (gemini-embedding-001) for vector similarity search.
+Background tasks ensure document uploads return in less than 200 milliseconds.

@@ -1,13 +1,16 @@
 import os
-from typing import List
-from fastapi import HTTPException, UploadFile, status
+from typing import List, Optional
+from fastapi import HTTPException, UploadFile, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.core.config import settings
+from app.core.database import SessionLocal
+from app.models.base import generate_uuid
 from app.models.document import Document, DocumentChunk, DocumentStatusEnum
 from app.models.chatbot import Chatbot
 from app.services.chunking import parse_file, chunk_text, SUPPORTED_FILE_TYPES
 from app.services.vector_service import VectorService
+from app.services.ai_service import AIService
 
 
 class DocumentService:
@@ -24,11 +27,12 @@ class DocumentService:
         db: Session,
         org_id: str,
         chatbot_id: str,
-        file: UploadFile
+        file: UploadFile,
+        background_tasks: Optional[BackgroundTasks] = None
     ) -> Document:
         """
         Uploads a file, saves it to disk, and creates a Document record.
-        Then triggers the processing pipeline (parse → chunk → embed).
+        Then schedules the processing pipeline (parse → chunk → embed) in background.
         """
         # 1. Validate file type
         filename = file.filename or "unknown"
@@ -77,16 +81,33 @@ class DocumentService:
         db.commit()
         db.refresh(document)
 
-        # 5. Trigger processing pipeline (synchronous for Phase 2)
-        cls.process_document(db, document.id, file_path, chatbot_id)
+        # 5. Trigger processing pipeline asynchronously
+        if background_tasks:
+            background_tasks.add_task(
+                cls.process_document_background,
+                document.id,
+                file_path,
+                chatbot_id
+            )
+        else:
+            cls.process_document(db, document.id, file_path, chatbot_id)
 
         return document
+
+    @classmethod
+    def process_document_background(cls, document_id: str, file_path: str, chatbot_id: str) -> None:
+        """Background task entry point that manages its own standalone database session."""
+        db = SessionLocal()
+        try:
+            cls.process_document(db, document_id, file_path, chatbot_id)
+        finally:
+            db.close()
 
     @classmethod
     def process_document(cls, db: Session, document_id: str, file_path: str, chatbot_id: str) -> None:
         """
         Runs the full document processing pipeline:
-        Parse → Chunk → Store chunks in DB → Add to vector store.
+        Parse → Chunk → Bulk DB Insert → Gemini Embeddings → Vector Store.
         """
         document = db.execute(select(Document).where(Document.id == document_id)).scalars().first()
         if not document:
@@ -112,24 +133,24 @@ class DocumentService:
             if not text_chunks:
                 raise ValueError("Text chunking produced zero chunks.")
 
-            # 3. Save chunks to database
+            # 3. Build chunk objects with pre-generated UUIDs
             chunk_ids = []
             chunk_texts = []
             chunk_metadatas = []
             db_chunks = []
 
             for idx, chunk_content in enumerate(text_chunks):
+                chunk_id = generate_uuid()
                 db_chunk = DocumentChunk(
+                    id=chunk_id,
                     document_id=document.id,
                     chunk_index=idx,
                     content=chunk_content,
                     char_count=len(chunk_content),
+                    embedding_id=chunk_id,
                 )
-                db.add(db_chunk)
-                db.flush()  # Get the generated ID
-
                 db_chunks.append(db_chunk)
-                chunk_ids.append(db_chunk.id)
+                chunk_ids.append(chunk_id)
                 chunk_texts.append(chunk_content)
                 chunk_metadatas.append({
                     "document_id": document.id,
@@ -139,19 +160,27 @@ class DocumentService:
                     "filename": document.filename,
                 })
 
-            # 4. Add chunks to vector store (ChromaDB handles embedding via its default function)
+            # 4. Bulk insert chunks to database
+            db.add_all(db_chunks)
+            db.flush()
+
+            # 5. Generate embeddings using Gemini API
+            embeddings = None
+            try:
+                embeddings = AIService.generate_embeddings(chunk_texts)
+            except Exception as emb_err:
+                print(f"Warning: Gemini embedding generation failed, falling back: {emb_err}")
+
+            # 6. Add chunks & embeddings to ChromaDB vector store
             VectorService.add_chunks(
                 chatbot_id=chatbot_id,
                 chunk_ids=chunk_ids,
                 chunk_texts=chunk_texts,
                 metadatas=chunk_metadatas,
+                embeddings=embeddings,
             )
 
-            # 5. Update embedding_id references on chunks
-            for db_chunk in db_chunks:
-                db_chunk.embedding_id = db_chunk.id
-
-            # 6. Mark document as completed
+            # 7. Mark document as completed
             document.chunk_count = len(text_chunks)
             document.status = DocumentStatusEnum.COMPLETED
             db.commit()

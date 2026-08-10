@@ -139,3 +139,55 @@ class AIService:
         except Exception as e:
             logger.error(f"Gemini API error: {str(e)}")
             raise ValueError(f"Failed to generate AI response: {str(e)}")
+
+    @classmethod
+    def get_embedding(cls, text: str) -> List[float]:
+        """Generates a single vector embedding for text using Gemini Embedding API."""
+        if not text or not text.strip():
+            return []
+        client = cls._get_client()
+        try:
+            res = client.models.embed_content(
+                model=settings.EMBEDDING_MODEL,
+                contents=text.strip()
+            )
+            if res.embeddings and len(res.embeddings) > 0:
+                return res.embeddings[0].values
+            return []
+        except Exception as e:
+            logger.error(f"Gemini embedding API error: {str(e)}")
+            raise ValueError(f"Failed to generate embedding: {str(e)}")
+
+    @classmethod
+    def generate_embeddings(cls, texts: List[str], batch_size: int = 50) -> List[List[float]]:
+        """
+        Generates vector embeddings for a list of text strings in batches using Gemini API.
+        
+        Args:
+            texts: List of text chunk strings.
+            batch_size: Number of texts per API call (default: 50).
+            
+        Returns:
+            List of embedding vectors (list of float lists).
+        """
+        if not texts:
+            return []
+
+        client = cls._get_client()
+        all_embeddings: List[List[float]] = []
+
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            try:
+                res = client.models.embed_content(
+                    model=settings.EMBEDDING_MODEL,
+                    contents=batch
+                )
+                if res.embeddings:
+                    all_embeddings.extend([emb.values for emb in res.embeddings])
+            except Exception as e:
+                logger.error(f"Gemini batch embedding API error (batch index {i}): {str(e)}")
+                raise ValueError(f"Failed to generate batch embeddings: {str(e)}")
+
+        return all_embeddings
+

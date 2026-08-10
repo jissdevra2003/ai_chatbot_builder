@@ -214,9 +214,13 @@ class ChatService:
         n_results = settings.MAX_CONTEXT_CHUNKS
 
         try:
+            query_vector = AIService.get_embedding(query)
+            query_embeddings = [query_vector] if query_vector else None
+
             results = VectorService.query(
                 chatbot_id=chatbot_id,
-                query_texts=[query],
+                query_embeddings=query_embeddings,
+                query_texts=[query] if not query_embeddings else None,
                 n_results=n_results,
             )
         except Exception as e:

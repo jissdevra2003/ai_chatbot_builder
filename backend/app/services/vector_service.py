@@ -88,7 +88,8 @@ class VectorService:
     def query(
         cls,
         chatbot_id: str,
-        query_texts: List[str],
+        query_texts: Optional[List[str]] = None,
+        query_embeddings: Optional[List[List[float]]] = None,
         n_results: int = 5,
         where_filter: Optional[dict] = None
     ) -> dict:
@@ -97,7 +98,8 @@ class VectorService:
         
         Args:
             chatbot_id: The chatbot to query against.
-            query_texts: List of query strings.
+            query_texts: Optional list of query strings.
+            query_embeddings: Optional pre-computed query embedding vectors.
             n_results: Number of results to return per query.
             where_filter: Optional metadata filter.
         
@@ -106,9 +108,16 @@ class VectorService:
         """
         collection = cls.get_or_create_collection(chatbot_id)
         query_kwargs = {
-            "query_texts": query_texts,
             "n_results": n_results,
         }
+        if query_embeddings:
+            query_kwargs["query_embeddings"] = query_embeddings
+        elif query_texts:
+            query_kwargs["query_texts"] = query_texts
+        else:
+            raise ValueError("Either query_texts or query_embeddings must be provided.")
+
         if where_filter:
             query_kwargs["where"] = where_filter
         return collection.query(**query_kwargs)
+

@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     # Phase 2: Gemini & Embeddings
     GEMINI_API_KEY: str = ""
-    EMBEDDING_MODEL: str = "text-embedding-004"
+    EMBEDDING_MODEL: str = "gemini-embedding-001"
 
     # Phase 2: ChromaDB Vector Store
     CHROMA_PERSIST_DIR: str = "./chroma_data"
