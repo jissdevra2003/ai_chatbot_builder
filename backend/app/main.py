@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import engine
 from app.models.base import Base
-from app.routers import auth, invitations, chatbots, documents
+from app.routers import auth, invitations, chatbots, documents, chat
 
 
 @asynccontextmanager
@@ -34,6 +34,7 @@ app.include_router(auth.router, prefix=settings.API_V1_STR)
 app.include_router(invitations.router, prefix=settings.API_V1_STR)
 app.include_router(chatbots.router, prefix=settings.API_V1_STR)
 app.include_router(documents.router, prefix=settings.API_V1_STR)
+app.include_router(chat.router, prefix=settings.API_V1_STR)
 
 
 
