@@ -24,6 +24,8 @@ backend/uploads/
 chroma_data/
 uploads/
 
+chatbot_builder.db
+
 # Node / Frontend
 node_modules/
 frontend/node_modules/
