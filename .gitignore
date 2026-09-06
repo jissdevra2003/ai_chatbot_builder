@@ -15,6 +15,9 @@ ENV/
 *.env
 .env.example
 *.example
+config.py
+**/config.py
+
 
 # Databases & local data
 *.db
