@@ -9,25 +9,32 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     
-    # Defaults to SQLite local db if POSTGRES_URL not provided
+    # Database
     DATABASE_URL: str = "postgresql://neondb_owner:npg_s7SWUgdQ2upP@ep-silent-poetry-ay7h6lo5-pooler.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
-    # Phase 2: Gemini & Embeddings
+    # Redis (Celery broker + backend)
+    REDIS_URL: str = "redis://localhost:6379/0"
+
+    # Gemini API & Embeddings
     GEMINI_API_KEY: str = ""
     EMBEDDING_MODEL: str = "gemini-embedding-001"
 
-    # Phase 2: ChromaDB Vector Store
-    CHROMA_PERSIST_DIR: str = "./chroma_data"
-
-    # Phase 2: Document Upload
-    MAX_UPLOAD_SIZE_MB: int = 20
+    # Document Upload
+    MAX_UPLOAD_SIZE_MB: int = 500
     UPLOAD_DIR: str = "./uploads"
 
-    # Phase 2: Chunking Defaults
+    # Chunking Defaults
     DEFAULT_CHUNK_SIZE: int = 1000
     DEFAULT_CHUNK_OVERLAP: int = 200
 
-    # Phase 3: Chat Settings
+    # Worker Configuration
+    WORKER_CONCURRENCY: int = 2
+    EMBEDDING_BATCH_SIZE: int = 20
+    CHUNK_BATCH_SIZE: int = 50
+    MAX_RETRIES: int = 3
+    MAX_CHUNKS_PER_DOCUMENT: int = 5000
+
+    # Chat Settings
     MAX_CONVERSATION_HISTORY: int = 20  # Max messages loaded for AI context
     MAX_CONTEXT_CHUNKS: int = 5  # Max vector search results per query
     

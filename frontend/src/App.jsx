@@ -4,6 +4,10 @@ import ProtectedRoute from './components/ProtectedRoute';
 import LoginPage from './pages/Auth/LoginPage';
 import SignupPage from './pages/Auth/SignupPage';
 import DashboardPage from './pages/Dashboard/DashboardPage';
+import ChatbotsPage from './pages/Chatbots/ChatbotsPage';
+import ChatbotDetailPage from './pages/Chatbots/ChatbotDetailPage';
+import TeamPage from './pages/Team/TeamPage';
+import SettingsPage from './pages/Settings/SettingsPage';
 
 export default function App() {
   return (
@@ -24,20 +28,30 @@ export default function App() {
             }
           />
 
-          {/* Placeholder routes for future phases */}
+          {/* Chatbot routes */}
           <Route
-            path="/chatbots/*"
+            path="/chatbots"
             element={
               <ProtectedRoute>
-                <DashboardPage />
+                <ChatbotsPage />
               </ProtectedRoute>
             }
           />
           <Route
+            path="/chatbots/:chatbotId"
+            element={
+              <ProtectedRoute>
+                <ChatbotDetailPage />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Team & Settings routes */}
+          <Route
             path="/team"
             element={
               <ProtectedRoute>
-                <DashboardPage />
+                <TeamPage />
               </ProtectedRoute>
             }
           />
@@ -45,7 +59,7 @@ export default function App() {
             path="/settings"
             element={
               <ProtectedRoute>
-                <DashboardPage />
+                <SettingsPage />
               </ProtectedRoute>
             }
           />

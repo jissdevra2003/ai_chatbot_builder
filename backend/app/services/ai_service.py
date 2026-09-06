@@ -3,6 +3,7 @@ AI Service — Gemini API wrapper for generating chat responses.
 Handles prompt construction, API calls, and error handling.
 """
 import logging
+from datetime import datetime, timezone
 from typing import List, Tuple, Optional
 from google import genai
 from google.genai import types
@@ -32,17 +33,26 @@ class AIService:
     @classmethod
     def _build_context_block(cls, context_chunks: List[str], source_filenames: List[str]) -> str:
         """Builds a formatted context block from retrieved document chunks."""
+        today_str = datetime.now(timezone.utc).strftime("%B %d, %Y")
+
         if not context_chunks:
-            return ""
+            return f"SYSTEM TEMPORAL CONTEXT: Today's date is {today_str}."
 
         context_parts = []
         for i, (chunk, filename) in enumerate(zip(context_chunks, source_filenames), 1):
             context_parts.append(f"[Source {i}: {filename}]\n{chunk}")
 
         return (
+            f"SYSTEM TEMPORAL CONTEXT: Today's date is {today_str}.\n\n"
             "--- RELEVANT KNOWLEDGE BASE DOCUMENTS ---\n"
-            "Use the following information to answer the user's question. "
-            "If the answer is not found in these documents, say so honestly.\n\n"
+            "Use the following uploaded documents as the primary factual source to answer the user's question.\n\n"
+            "CRITICAL DIRECTIVES:\n"
+            "1. Treat all events, dates, numbers, and facts in the Knowledge Base documents below as ACCURATE REALITY.\n"
+            "2. Do NOT claim recent events or dates mentioned in the documents (such as 2026) are in the future or haven't occurred yet.\n"
+            "3. Structure your answer using clear Markdown formatting with bold headers and bullet points.\n"
+            "4. Add double line breaks between sections for clean spacing.\n"
+            "5. Keep the tone helpful, professional, and easy to read.\n"
+            "6. If the answer is not found in these documents, say so honestly.\n\n"
             + "\n\n".join(context_parts)
             + "\n--- END OF DOCUMENTS ---"
         )
@@ -77,7 +87,7 @@ class AIService:
         context: str,
         conversation_history: List[dict],
         user_message: str,
-        model_name: str = "gemini-2.0-flash",
+        model_name: str = "gemini-3.6-flash",
         temperature: float = 0.7,
     ) -> Tuple[str, int]:
         """
@@ -149,7 +159,8 @@ class AIService:
         try:
             res = client.models.embed_content(
                 model=settings.EMBEDDING_MODEL,
-                contents=text.strip()
+                contents=text.strip(),
+                config={"output_dimensionality": 768},
             )
             if res.embeddings and len(res.embeddings) > 0:
                 return res.embeddings[0].values
@@ -159,17 +170,24 @@ class AIService:
             raise ValueError(f"Failed to generate embedding: {str(e)}")
 
     @classmethod
-    def generate_embeddings(cls, texts: List[str], batch_size: int = 50) -> List[List[float]]:
+    def generate_embeddings(cls, texts: List[str], batch_size: int = 20, max_retries: int = 3) -> List[List[float]]:
         """
         Generates vector embeddings for a list of text strings in batches using Gemini API.
+        Includes retry logic with exponential backoff for transient API failures.
         
         Args:
             texts: List of text chunk strings.
             batch_size: Number of texts per API call (default: 50).
+            max_retries: Max retry attempts per batch (default: 3).
             
         Returns:
             List of embedding vectors (list of float lists).
+            
+        Raises:
+            ValueError: If embedding generation fails after all retries.
         """
+        import time as _time
+
         if not texts:
             return []
 
@@ -178,16 +196,36 @@ class AIService:
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
-            try:
-                res = client.models.embed_content(
-                    model=settings.EMBEDDING_MODEL,
-                    contents=batch
+            last_error = None
+
+            for attempt in range(1, max_retries + 1):
+                try:
+                    res = client.models.embed_content(
+                        model=settings.EMBEDDING_MODEL,
+                        contents=batch,
+                        config={"output_dimensionality": 768},
+                    )
+                    if res.embeddings:
+                        all_embeddings.extend([emb.values for emb in res.embeddings if emb.values is not None])
+                    last_error = None
+                    break  # Success — move to next batch
+                except Exception as e:
+                    last_error = e
+                    if attempt < max_retries:
+                        wait = 2 ** attempt  # 2s, 4s, 8s
+                        logger.warning(
+                            f"Gemini embedding batch {i} attempt {attempt}/{max_retries} failed: {e}. "
+                            f"Retrying in {wait}s..."
+                        )
+                        _time.sleep(wait)
+                    else:
+                        logger.error(f"Gemini embedding batch {i} failed after {max_retries} attempts: {e}")
+
+            if last_error:
+                raise ValueError(
+                    f"Embedding generation failed after {max_retries} retries for batch starting at index {i}: "
+                    f"{str(last_error)}"
                 )
-                if res.embeddings:
-                    all_embeddings.extend([emb.values for emb in res.embeddings])
-            except Exception as e:
-                logger.error(f"Gemini batch embedding API error (batch index {i}): {str(e)}")
-                raise ValueError(f"Failed to generate batch embeddings: {str(e)}")
 
         return all_embeddings
 

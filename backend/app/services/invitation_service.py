@@ -98,6 +98,27 @@ class InvitationService:
         return list(db.execute(stmt).scalars().all())
 
     @classmethod
+    def list_org_members(cls, db: Session, org_id: str):
+        """Lists all members in an organization with user details."""
+        stmt = (
+            select(Membership, User)
+            .join(User, Membership.user_id == User.id)
+            .where(Membership.org_id == org_id)
+            .order_by(Membership.created_at.asc())
+        )
+        results = db.execute(stmt).all()
+        members = []
+        for membership, user in results:
+            members.append({
+                "user_id": user.id,
+                "full_name": user.full_name,
+                "email": user.email,
+                "role": membership.role,
+                "joined_at": membership.created_at
+            })
+        return members
+
+    @classmethod
     def accept_invitation(
         cls,
         db: Session,

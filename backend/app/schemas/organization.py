@@ -17,3 +17,15 @@ class UserMeResponse(BaseModel):
     user: UserResponse
     active_organization: OrgResponse
     role: RoleEnum
+
+
+class MemberResponse(BaseModel):
+    user_id: str
+    full_name: str
+    email: str
+    role: RoleEnum
+    joined_at: datetime
+
+
+class OrgUpdate(BaseModel):
+    name: str

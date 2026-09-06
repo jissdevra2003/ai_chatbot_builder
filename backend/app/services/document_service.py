@@ -1,25 +1,98 @@
+"""
+Document Service — Lightweight orchestrator for document management.
+
+ARCHITECTURE:
+  Upload flow:
+    1. Validate file (extension, MIME, size, empty)
+    2. Sanitize filename, generate safe storage path
+    3. Stream file to disk in 64KB chunks (bounded memory)
+    4. Create Document DB record (status=QUEUED)
+    5. Dispatch Celery task for background processing
+    6. Return 201 immediately — server stays responsive
+
+  The Celery worker does ALL heavy lifting (extract → chunk → embed → index)
+  in its own process.  If the worker crashes, FastAPI stays alive.
+  The frontend polls GET /documents/ for status updates.
+"""
 import os
+import re
+import logging
 from typing import List, Optional
-from fastapi import HTTPException, UploadFile, status, BackgroundTasks
+from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.core.config import settings
-from app.core.database import SessionLocal
 from app.models.base import generate_uuid
-from app.models.document import Document, DocumentChunk, DocumentStatusEnum
+from app.models.document import Document, DocumentChunk, DocumentStatusEnum, ACTIVE_STATUSES
 from app.models.chatbot import Chatbot
-from app.services.chunking import parse_file, chunk_text, SUPPORTED_FILE_TYPES
-from app.services.vector_service import VectorService
-from app.services.ai_service import AIService
+
+logger = logging.getLogger(__name__)
+
+# File upload constants
+STREAM_READ_CHUNK_SIZE = 64 * 1024  # 64KB per disk-read iteration
+SUPPORTED_FILE_TYPES = {"pdf", "docx", "txt", "csv"}
+
+# MIME type mapping for validation
+ALLOWED_MIME_TYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/plain",
+    "text/csv",
+    "application/csv",
+    "application/octet-stream",  # Fallback for some file types
+}
+
+# Map extensions to expected MIME types
+EXTENSION_MIME_MAP = {
+    "pdf": {"application/pdf"},
+    "docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/octet-stream"},
+    "txt": {"text/plain", "application/octet-stream"},
+    "csv": {"text/csv", "application/csv", "text/plain", "application/octet-stream"},
+}
+
+
+def _sanitize_filename(filename: str) -> str:
+    """
+    Sanitizes a filename for safe storage.
+    Removes path separators, null bytes, and other dangerous characters.
+    """
+    # Remove path components
+    filename = os.path.basename(filename)
+
+    # Remove null bytes and control characters
+    filename = re.sub(r'[\x00-\x1f\x7f]', '', filename)
+
+    # Remove path traversal patterns
+    filename = filename.replace('..', '_')
+
+    # Replace dangerous characters
+    filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+
+    # Limit length
+    if len(filename) > 255:
+        name, ext = os.path.splitext(filename)
+        filename = name[:255 - len(ext)] + ext
+
+    return filename or "unnamed_file"
+
+
+def _detect_mime_type(file_path: str) -> Optional[str]:
+    """Detects the MIME type of a file using python-magic."""
+    try:
+        import magic
+        return magic.from_file(file_path, mime=True)
+    except Exception as e:
+        logger.warning(f"MIME detection failed: {e}")
+        return None
 
 
 class DocumentService:
     @classmethod
-    def _get_upload_dir(cls, org_id: str, chatbot_id: str) -> str:
-        """Returns the file upload directory path for an org/chatbot combo."""
-        upload_dir = os.path.join(settings.UPLOAD_DIR, org_id, chatbot_id)
-        os.makedirs(upload_dir, exist_ok=True)
-        return upload_dir
+    def _get_storage_dir(cls, org_id: str) -> str:
+        """Returns the storage directory for an organization's documents."""
+        storage_dir = os.path.join(settings.UPLOAD_DIR, f"org_{org_id}")
+        os.makedirs(storage_dir, exist_ok=True)
+        return storage_dir
 
     @classmethod
     def upload_document(
@@ -28,171 +101,117 @@ class DocumentService:
         org_id: str,
         chatbot_id: str,
         file: UploadFile,
-        background_tasks: Optional[BackgroundTasks] = None
     ) -> Document:
         """
-        Uploads a file, saves it to disk, and creates a Document record.
-        Then schedules the processing pipeline (parse → chunk → embed) in background.
+        Uploads a file, validates, saves to disk, creates a Document record,
+        and dispatches a Celery task for processing.  Returns immediately.
         """
-        # 1. Validate file type
-        filename = file.filename or "unknown"
-        file_ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        # 1. Validate file extension
+        raw_filename = file.filename or "unknown"
+        safe_filename = _sanitize_filename(raw_filename)
+        file_ext = safe_filename.rsplit(".", 1)[-1].lower() if "." in safe_filename else ""
+
         if file_ext not in SUPPORTED_FILE_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unsupported file type: '.{file_ext}'. Supported: {', '.join(SUPPORTED_FILE_TYPES)}"
+                detail=f"Unsupported file type: '.{file_ext}'. Supported: {', '.join(sorted(SUPPORTED_FILE_TYPES))}"
             )
 
-        # 2. Read file content and check size
-        file_content = file.file.read()
-        file_size = len(file_content)
-        max_size = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+        # 2. Validate client-provided MIME type (defense in depth)
+        client_mime = file.content_type or ""
+        expected_mimes = EXTENSION_MIME_MAP.get(file_ext, set())
+        if client_mime and client_mime not in expected_mimes and client_mime not in ALLOWED_MIME_TYPES:
+            logger.warning(
+                f"Suspicious MIME type '{client_mime}' for .{file_ext} file. "
+                f"Expected one of: {expected_mimes}"
+            )
 
+        # 3. Generate safe storage path using UUID (never use user-provided filename as path)
+        doc_id = generate_uuid()
+        storage_filename = f"doc_{doc_id}.{file_ext}"
+        storage_dir = cls._get_storage_dir(org_id)
+        file_path = os.path.join(storage_dir, storage_filename)
+
+        # 4. Stream file to disk — never load entire file into memory
+        max_size = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+        file_size = 0
+
+        try:
+            with open(file_path, "wb") as f:
+                while True:
+                    chunk = file.file.read(STREAM_READ_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    file_size += len(chunk)
+                    if file_size > max_size:
+                        break
+                    f.write(chunk)
+        except Exception as write_err:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            logger.error(f"Failed to save uploaded file: {write_err}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to save uploaded file."
+            )
+
+        # 5. Validate file size
         if file_size > max_size:
+            if os.path.exists(file_path):
+                os.remove(file_path)
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"File size ({file_size // (1024*1024)}MB) exceeds maximum ({settings.MAX_UPLOAD_SIZE_MB}MB)."
+                detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB)."
             )
 
-        # 3. Save file to disk
-        upload_dir = cls._get_upload_dir(org_id, chatbot_id)
-        file_path = os.path.join(upload_dir, filename)
+        if file_size == 0:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Uploaded file is empty."
+            )
 
-        # Handle duplicate filenames by appending a counter
-        base_name, ext = os.path.splitext(filename)
-        counter = 1
-        while os.path.exists(file_path):
-            file_path = os.path.join(upload_dir, f"{base_name}_{counter}{ext}")
-            counter += 1
+        # 6. Detect actual MIME type from file content
+        detected_mime = _detect_mime_type(file_path)
 
-        with open(file_path, "wb") as f:
-            f.write(file_content)
-
-        # 4. Create Document record
+        # 7. Create Document record
         document = Document(
+            id=doc_id,
             chatbot_id=chatbot_id,
             org_id=org_id,
-            filename=os.path.basename(file_path),
+            filename=safe_filename,
+            storage_path=file_path,
             file_type=file_ext,
+            mime_type=detected_mime or client_mime,
             file_size_bytes=file_size,
-            status=DocumentStatusEnum.PENDING,
+            status=DocumentStatusEnum.QUEUED,
+            processing_stage="queued",
+            progress=0,
         )
         db.add(document)
         db.commit()
         db.refresh(document)
 
-        # 5. Trigger processing pipeline asynchronously
-        if background_tasks:
-            background_tasks.add_task(
-                cls.process_document_background,
-                document.id,
-                file_path,
-                chatbot_id
-            )
-        else:
-            cls.process_document(db, document.id, file_path, chatbot_id)
-
-        return document
-
-    @classmethod
-    def process_document_background(cls, document_id: str, file_path: str, chatbot_id: str) -> None:
-        """Background task entry point that manages its own standalone database session."""
-        db = SessionLocal()
+        # 8. Dispatch document to native background worker queue
         try:
-            cls.process_document(db, document_id, file_path, chatbot_id)
-        finally:
-            db.close()
+            from app.worker.background_worker import document_worker_queue
+            task_id = document_worker_queue.submit_task(document.id)
 
-    @classmethod
-    def process_document(cls, db: Session, document_id: str, file_path: str, chatbot_id: str) -> None:
-        """
-        Runs the full document processing pipeline:
-        Parse → Chunk → Bulk DB Insert → Gemini Embeddings → Vector Store.
-        """
-        document = db.execute(select(Document).where(Document.id == document_id)).scalars().first()
-        if not document:
-            return
-
-        # Get chatbot for chunking config
-        chatbot = db.execute(select(Chatbot).where(Chatbot.id == chatbot_id)).scalars().first()
-        chunk_size = chatbot.chunk_size if chatbot else settings.DEFAULT_CHUNK_SIZE
-        chunk_overlap = chatbot.chunk_overlap if chatbot else settings.DEFAULT_CHUNK_OVERLAP
-
-        # Mark as processing
-        document.status = DocumentStatusEnum.PROCESSING
-        db.commit()
-
-        try:
-            # 1. Parse file to text
-            raw_text = parse_file(file_path, document.file_type)
-            if not raw_text or not raw_text.strip():
-                raise ValueError("No text content could be extracted from the file.")
-
-            # 2. Chunk the text
-            text_chunks = chunk_text(raw_text, chunk_size=chunk_size, overlap=chunk_overlap)
-            if not text_chunks:
-                raise ValueError("Text chunking produced zero chunks.")
-
-            # 3. Build chunk objects with pre-generated UUIDs
-            chunk_ids = []
-            chunk_texts = []
-            chunk_metadatas = []
-            db_chunks = []
-
-            for idx, chunk_content in enumerate(text_chunks):
-                chunk_id = generate_uuid()
-                db_chunk = DocumentChunk(
-                    id=chunk_id,
-                    document_id=document.id,
-                    chunk_index=idx,
-                    content=chunk_content,
-                    char_count=len(chunk_content),
-                    embedding_id=chunk_id,
-                )
-                db_chunks.append(db_chunk)
-                chunk_ids.append(chunk_id)
-                chunk_texts.append(chunk_content)
-                chunk_metadatas.append({
-                    "document_id": document.id,
-                    "org_id": document.org_id,
-                    "chatbot_id": chatbot_id,
-                    "chunk_index": idx,
-                    "filename": document.filename,
-                })
-
-            # 4. Bulk insert chunks to database
-            db.add_all(db_chunks)
-            db.flush()
-
-            # 5. Generate embeddings using Gemini API
-            embeddings = None
-            try:
-                embeddings = AIService.generate_embeddings(chunk_texts)
-            except Exception as emb_err:
-                print(f"Warning: Gemini embedding generation failed, falling back: {emb_err}")
-
-            # 6. Add chunks & embeddings to ChromaDB vector store
-            VectorService.add_chunks(
-                chatbot_id=chatbot_id,
-                chunk_ids=chunk_ids,
-                chunk_texts=chunk_texts,
-                metadatas=chunk_metadatas,
-                embeddings=embeddings,
-            )
-
-            # 7. Mark document as completed
-            document.chunk_count = len(text_chunks)
-            document.status = DocumentStatusEnum.COMPLETED
+            document.celery_task_id = task_id
             db.commit()
 
+            logger.info(
+                f"Document {document.id} queued for background processing "
+                f"(task_id={task_id}, size={file_size} bytes)"
+            )
         except Exception as e:
-            db.rollback()
-            # Re-fetch document after rollback
-            document = db.execute(select(Document).where(Document.id == document_id)).scalars().first()
-            if document:
-                document.status = DocumentStatusEnum.FAILED
-                document.error_message = str(e)[:2000]
-                db.commit()
+            logger.error(f"Failed to queue document for processing: {e}")
+            document.status = DocumentStatusEnum.FAILED
+            document.error_message = "Failed to queue document for processing."
+            db.commit()
+
+        return document
 
     @classmethod
     def list_documents(cls, db: Session, org_id: str, chatbot_id: str) -> List[Document]:
@@ -228,21 +247,37 @@ class DocumentService:
 
     @classmethod
     def delete_document(cls, db: Session, org_id: str, chatbot_id: str, document_id: str) -> None:
-        """Deletes a document, its chunks, and purges vectors from the store."""
+        """Deletes a document, its chunks, and removes the file from disk."""
         document = cls.get_document(db, org_id, document_id)
-
-        # Remove vectors from ChromaDB
-        VectorService.delete_document_vectors(chatbot_id, document_id)
 
         # Delete file from disk (best effort)
         try:
-            upload_dir = cls._get_upload_dir(org_id, chatbot_id)
-            file_path = os.path.join(upload_dir, document.filename)
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        except OSError:
-            pass
+            if document.storage_path and os.path.exists(document.storage_path):
+                os.remove(document.storage_path)
+        except OSError as e:
+            logger.warning(f"Failed to delete file {document.storage_path}: {e}")
 
-        # Delete from database (cascades to chunks)
+        # Delete from database (cascades to chunks via FK)
         db.delete(document)
         db.commit()
+
+
+def mark_stale_documents_as_failed(db: Session) -> int:
+    """
+    Called on server startup.  Finds any documents stuck in active processing
+    states (from a previous crash/restart) and marks them as FAILED.
+    Returns the count of stale documents found.
+    """
+    stmt = select(Document).where(Document.status.in_(list(ACTIVE_STATUSES)))
+    stale_docs = list(db.execute(stmt).scalars().all())
+
+    for doc in stale_docs:
+        doc.status = DocumentStatusEnum.FAILED
+        doc.processing_stage = "failed"
+        doc.error_message = "Processing was interrupted by a server restart. Please re-upload."
+
+    if stale_docs:
+        db.commit()
+        logger.warning(f"Marked {len(stale_docs)} stale documents as FAILED on startup.")
+
+    return len(stale_docs)

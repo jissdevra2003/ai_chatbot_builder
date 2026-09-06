@@ -298,9 +298,14 @@
   transition: all var(--transition-base);
 }
 
-.stat-card:hover {
+.stat-card-interactive {
+  cursor: pointer;
+}
+
+.stat-card-interactive:hover {
   border-color: var(--color-text-tertiary);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
 }
 
 .stat-card-label {

@@ -1,6 +1,6 @@
 import io
 import os
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 from app.models.document import Document, DocumentChunk, DocumentStatusEnum
@@ -20,10 +20,15 @@ def _setup_chatbot(client: TestClient, email: str = "docuser@test.com"):
 
 
 class TestDocumentUpload:
-    def test_upload_txt_document(self, client: TestClient, db_session: Session):
+    """Tests for document upload API — Background worker task is mocked."""
+
+    @patch("app.worker.background_worker.document_worker_queue.submit_task", return_value="bgtask-test-id")
+    @patch("app.services.document_service._detect_mime_type", return_value="text/plain")
+    def test_upload_txt_document(self, mock_mime, mock_submit, client: TestClient, db_session: Session):
+        """Upload returns immediately with status=queued (Background worker processes async)."""
         headers, chatbot_id = _setup_chatbot(client, "txtupl@test.com")
 
-        txt_content = "This is a test document.\n\nIt has multiple paragraphs.\n\nEach paragraph will become part of the knowledge base."
+        txt_content = "This is a test document.\n\nIt has multiple paragraphs."
         file = io.BytesIO(txt_content.encode("utf-8"))
 
         resp = client.post(
@@ -35,11 +40,13 @@ class TestDocumentUpload:
         data = resp.json()
         assert data["filename"] == "test_doc.txt"
         assert data["file_type"] == "txt"
-        assert data["status"] == "completed"
-        assert data["chunk_count"] >= 1
+        assert data["status"] == "queued"  # Now async — returns queued, not completed
         assert data["error_message"] is None
+        mock_submit.assert_called_once()
 
-    def test_upload_unsupported_file_type(self, client: TestClient, db_session: Session):
+    @patch("app.worker.background_worker.document_worker_queue.submit_task", return_value="bgtask-test-id")
+    @patch("app.services.document_service._detect_mime_type", return_value=None)
+    def test_upload_unsupported_file_type(self, mock_mime, mock_submit, client: TestClient, db_session: Session):
         headers, chatbot_id = _setup_chatbot(client, "unsup@test.com")
 
         file = io.BytesIO(b"binary data")
@@ -50,8 +57,26 @@ class TestDocumentUpload:
         )
         assert resp.status_code == 400
         assert "Unsupported file type" in resp.json()["detail"]
+        mock_submit.assert_not_called()
 
-    def test_list_documents(self, client: TestClient, db_session: Session):
+    @patch("app.worker.background_worker.document_worker_queue.submit_task", return_value="bgtask-test-id")
+    @patch("app.services.document_service._detect_mime_type", return_value="text/plain")
+    def test_upload_empty_file(self, mock_mime, mock_submit, client: TestClient, db_session: Session):
+        headers, chatbot_id = _setup_chatbot(client, "empty@test.com")
+
+        file = io.BytesIO(b"")
+        resp = client.post(
+            f"/api/v1/chatbots/{chatbot_id}/documents/upload",
+            headers=headers,
+            files={"file": ("empty.txt", file, "text/plain")}
+        )
+        assert resp.status_code == 400
+        assert "empty" in resp.json()["detail"].lower()
+        mock_submit.assert_not_called()
+
+    @patch("app.worker.background_worker.document_worker_queue.submit_task", return_value="bgtask-test-id")
+    @patch("app.services.document_service._detect_mime_type", return_value="text/plain")
+    def test_list_documents(self, mock_mime, mock_submit, client: TestClient, db_session: Session):
         headers, chatbot_id = _setup_chatbot(client, "listdoc@test.com")
 
         # Upload 2 documents
@@ -68,7 +93,9 @@ class TestDocumentUpload:
         docs = resp.json()
         assert len(docs) == 2
 
-    def test_get_document_detail(self, client: TestClient, db_session: Session):
+    @patch("app.worker.background_worker.document_worker_queue.submit_task", return_value="bgtask-test-id")
+    @patch("app.services.document_service._detect_mime_type", return_value="text/plain")
+    def test_get_document_detail(self, mock_mime, mock_submit, client: TestClient, db_session: Session):
         headers, chatbot_id = _setup_chatbot(client, "detaildoc@test.com")
 
         file = io.BytesIO(b"Detail test content here")
@@ -82,29 +109,13 @@ class TestDocumentUpload:
         resp = client.get(f"/api/v1/chatbots/{chatbot_id}/documents/{doc_id}", headers=headers)
         assert resp.status_code == 200
         assert resp.json()["filename"] == "detail.txt"
+        assert resp.json()["status"] == "queued"
+        assert "processing_stage" in resp.json()
+        assert "progress" in resp.json()
 
-    def test_get_document_chunks(self, client: TestClient, db_session: Session):
-        headers, chatbot_id = _setup_chatbot(client, "chunkdoc@test.com")
-
-        # Upload a document with enough content to create at least 1 chunk
-        content = "This is a test paragraph with enough content to create chunks. " * 20
-        file = io.BytesIO(content.encode("utf-8"))
-        upload_resp = client.post(
-            f"/api/v1/chatbots/{chatbot_id}/documents/upload",
-            headers=headers,
-            files={"file": ("chunks.txt", file, "text/plain")}
-        )
-        doc_id = upload_resp.json()["id"]
-
-        resp = client.get(f"/api/v1/chatbots/{chatbot_id}/documents/{doc_id}/chunks", headers=headers)
-        assert resp.status_code == 200
-        chunks = resp.json()
-        assert len(chunks) >= 1
-        assert "content" in chunks[0]
-        assert "chunk_index" in chunks[0]
-        assert chunks[0]["chunk_index"] == 0
-
-    def test_delete_document(self, client: TestClient, db_session: Session):
+    @patch("app.worker.background_worker.document_worker_queue.submit_task", return_value="bgtask-test-id")
+    @patch("app.services.document_service._detect_mime_type", return_value="text/plain")
+    def test_delete_document(self, mock_mime, mock_submit, client: TestClient, db_session: Session):
         headers, chatbot_id = _setup_chatbot(client, "deldoc@test.com")
 
         file = io.BytesIO(b"Content to delete")
@@ -125,8 +136,10 @@ class TestDocumentUpload:
 
 
 class TestChunkingLogic:
+    """Tests for the chunking algorithm (no Celery required)."""
+
     def test_chunk_text_basic(self):
-        from app.services.chunking import chunk_text
+        from app.worker.chunking import chunk_text
         text = "Hello world. " * 200  # ~2600 chars
         chunks = chunk_text(text, chunk_size=500, overlap=100)
         assert len(chunks) > 1
@@ -134,12 +147,37 @@ class TestChunkingLogic:
             assert len(chunk) <= 600  # Allow some tolerance
 
     def test_chunk_text_short_text(self):
-        from app.services.chunking import chunk_text
+        from app.worker.chunking import chunk_text
         chunks = chunk_text("Short text", chunk_size=1000, overlap=200)
         assert len(chunks) == 1
         assert chunks[0] == "Short text"
 
     def test_chunk_text_empty(self):
-        from app.services.chunking import chunk_text
+        from app.worker.chunking import chunk_text
         assert chunk_text("", chunk_size=1000, overlap=200) == []
         assert chunk_text("   ", chunk_size=1000, overlap=200) == []
+
+
+class TestExtractionLogic:
+    """Tests for file extraction (no Celery required)."""
+
+    def test_extract_txt(self, tmp_path):
+        from app.worker.extraction import extract_txt
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("Hello world. This is a test file.", encoding="utf-8")
+
+        results = list(extract_txt(str(test_file)))
+        assert len(results) >= 1
+        full_text = " ".join(text for _, text in results)
+        assert "Hello world" in full_text
+
+    def test_extract_csv(self, tmp_path):
+        from app.worker.extraction import extract_csv
+        test_file = tmp_path / "test.csv"
+        test_file.write_text("name,age\nAlice,30\nBob,25\n", encoding="utf-8")
+
+        results = list(extract_csv(str(test_file)))
+        assert len(results) >= 1
+        full_text = " ".join(text for _, text in results)
+        assert "Alice" in full_text
+        assert "Bob" in full_text

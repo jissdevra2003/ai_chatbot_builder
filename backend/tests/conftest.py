@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import patch
 from typing import Generator
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -34,7 +35,7 @@ def db_session() -> Generator[Session, None, None]:
 
 @pytest.fixture(scope="function")
 def client(db_session: Session) -> Generator[TestClient, None, None]:
-    """FastAPI TestClient with overridden get_db dependency."""
+    """FastAPI TestClient with overridden get_db dependency and patched SessionLocal."""
     def _override_get_db():
         try:
             yield db_session
@@ -42,6 +43,10 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
             pass
 
     app.dependency_overrides[get_db] = _override_get_db
-    with TestClient(app) as test_client:
-        yield test_client
+
+    with patch("app.core.database.SessionLocal", TestingSessionLocal), \
+         patch("app.main.SessionLocal", TestingSessionLocal):
+        with TestClient(app) as test_client:
+            yield test_client
+
     app.dependency_overrides.clear()

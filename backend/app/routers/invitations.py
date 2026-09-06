@@ -7,6 +7,7 @@ from app.models.user import User
 from app.models.organization import Organization
 from app.models.membership import RoleEnum
 from app.schemas.invitation import InvitationCreate, InvitationResponse, InvitationAccept
+from app.schemas.organization import MemberResponse
 from app.services.invitation_service import InvitationService
 
 router = APIRouter(prefix="/invitations", tags=["Invitations"])
@@ -36,6 +37,16 @@ def list_invitations(
     """Lists all pending/sent invitations for the active organization."""
     _, active_org, _ = auth_data
     return InvitationService.list_org_invitations(db, org_id=active_org.id)
+
+
+@router.get("/members", response_model=List[MemberResponse])
+def list_members(
+    auth_data: Tuple[User, Organization, RoleEnum] = Depends(require_roles(RoleEnum.OWNER, RoleEnum.ADMIN, RoleEnum.MEMBER)),
+    db: Session = Depends(get_db)
+):
+    """Lists all active members for the organization."""
+    _, active_org, _ = auth_data
+    return InvitationService.list_org_members(db, org_id=active_org.id)
 
 
 @router.get("/{token}", response_model=InvitationResponse)

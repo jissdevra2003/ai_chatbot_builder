@@ -1,5 +1,5 @@
 from typing import List, Tuple
-from fastapi import APIRouter, Depends, UploadFile, File, BackgroundTasks
+from fastapi import APIRouter, Depends, UploadFile, File
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.dependencies import require_roles
@@ -16,23 +16,20 @@ router = APIRouter(prefix="/chatbots/{chatbot_id}/documents", tags=["Documents"]
 @router.post("/upload", response_model=DocumentResponse, status_code=201)
 def upload_document(
     chatbot_id: str,
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     auth_data: Tuple[User, Organization, RoleEnum] = Depends(require_roles(RoleEnum.OWNER, RoleEnum.ADMIN)),
     db: Session = Depends(get_db)
 ):
-    """Uploads a document to a chatbot's knowledge base. Triggers async parse → chunk → embed pipeline."""
+    """Uploads a document to a chatbot's knowledge base.
+    File is saved to disk and processing is spawned in a separate subprocess."""
     _, active_org, _ = auth_data
-    # Verify chatbot belongs to this org
     ChatbotService.get_chatbot(db, org_id=active_org.id, chatbot_id=chatbot_id)
     return DocumentService.upload_document(
         db,
         org_id=active_org.id,
         chatbot_id=chatbot_id,
         file=file,
-        background_tasks=background_tasks
     )
-
 
 
 @router.get("/", response_model=List[DocumentResponse])

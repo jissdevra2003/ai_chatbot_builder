@@ -1,17 +1,21 @@
 from typing import List, Tuple
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.dependencies import require_roles
 from app.models.user import User
 from app.models.organization import Organization
 from app.models.membership import RoleEnum
+from app.models.chatbot import Chatbot
 from app.schemas.chat import (
     ChatRequest,
     ChatResponse,
     ConversationResponse,
     ConversationDetailResponse,
     MessageResponse,
+    WidgetChatRequest,
+    WidgetConfigResponse,
 )
 from app.services.chatbot_service import ChatbotService
 from app.services.chat_service import ChatService
@@ -112,3 +116,55 @@ def delete_conversation(
     ChatbotService.get_chatbot(db, org_id=active_org.id, chatbot_id=conversation.chatbot_id)
 
     ChatService.delete_conversation(db, conversation_id=conversation_id)
+
+
+# --- Public Widget Endpoints (No Auth Required) ---
+
+@router.post("/widget/chat", response_model=ChatResponse)
+def widget_chat(
+    request_data: WidgetChatRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Public endpoint for embedded website chat widgets.
+    No JWT authentication required.
+    """
+    stmt = select(Chatbot).where(Chatbot.id == request_data.chatbot_id)
+    chatbot = db.execute(stmt).scalars().first()
+    if not chatbot:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chatbot not found."
+        )
+
+    return ChatService.send_message(
+        db=db,
+        chatbot=chatbot,
+        message=request_data.message,
+        session_id=request_data.session_id,
+    )
+
+
+@router.get("/widget/config/{chatbot_id}", response_model=WidgetConfigResponse)
+def get_widget_config(
+    chatbot_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Public endpoint to fetch widget configuration for an embedded chatbot.
+    """
+    stmt = select(Chatbot).where(Chatbot.id == chatbot_id)
+    chatbot = db.execute(stmt).scalars().first()
+    if not chatbot:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chatbot not found."
+        )
+
+    return WidgetConfigResponse(
+        chatbot_id=chatbot.id,
+        name=chatbot.name,
+        description=chatbot.description,
+        welcome_message=f"Hi there! I'm {chatbot.name}. How can I help you today?"
+    )
+

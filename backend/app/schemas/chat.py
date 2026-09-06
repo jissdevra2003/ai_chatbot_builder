@@ -12,6 +12,26 @@ class ChatRequest(BaseModel):
     )
 
 
+class WidgetChatRequest(BaseModel):
+    """Request body for sending a chat message from an embedded widget."""
+    chatbot_id: str = Field(..., min_length=1, description="Chatbot ID")
+    message: str = Field(..., min_length=1, max_length=10000, description="User's message text")
+    session_id: Optional[str] = Field(
+        None, max_length=64,
+        description="Session ID to continue an existing conversation."
+    )
+
+
+class WidgetConfigResponse(BaseModel):
+    """Public configuration metadata for rendering an embedded widget."""
+    model_config = ConfigDict(from_attributes=True)
+
+    chatbot_id: str
+    name: str
+    description: Optional[str] = None
+    welcome_message: str = "Hi there! How can I help you today?"
+
+
 class ChatSourceDocument(BaseModel):
     """A source document chunk that was used to generate the bot's response."""
     filename: str

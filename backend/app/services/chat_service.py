@@ -79,7 +79,7 @@ class ChatService:
         history = cls._load_history(db, conversation.id)
 
         # --- Step 4: Search vector store for relevant chunks ---
-        context_chunks, source_docs = cls._search_knowledge_base(chatbot.id, message)
+        context_chunks, source_docs = cls._search_knowledge_base(db, chatbot, message)
 
         # --- Step 5: Build context string ---
         context = AIService._build_context_block(
@@ -202,11 +202,13 @@ class ChatService:
     @classmethod
     def _search_knowledge_base(
         cls,
-        chatbot_id: str,
+        db: Session,
+        chatbot: Chatbot,
         query: str,
     ) -> tuple[List[str], List[ChatSourceDocument]]:
         """
         Searches the chatbot's vector store for chunks relevant to the query.
+        Uses pgvector cosine similarity search.
 
         Returns:
             Tuple of (chunk_texts, source_documents).
@@ -215,36 +217,34 @@ class ChatService:
 
         try:
             query_vector = AIService.get_embedding(query)
-            query_embeddings = [query_vector] if query_vector else None
+            if not query_vector:
+                logger.warning(f"Empty embedding for query, skipping vector search")
+                return [], []
 
-            results = VectorService.query(
-                chatbot_id=chatbot_id,
-                query_embeddings=query_embeddings,
-                query_texts=[query] if not query_embeddings else None,
+            results = VectorService.search_similar(
+                db=db,
+                chatbot_id=chatbot.id,
+                org_id=chatbot.org_id,
+                query_embedding=query_vector,
                 n_results=n_results,
             )
         except Exception as e:
-            logger.warning(f"Vector search failed for chatbot {chatbot_id}: {e}")
+            logger.warning(f"Vector search failed for chatbot {chatbot.id}: {e}")
             return [], []
 
-        # Parse ChromaDB results
-        if not results or not results.get("documents") or not results["documents"][0]:
+        if not results:
             return [], []
-
-        documents = results["documents"][0]
-        metadatas = results["metadatas"][0] if results.get("metadatas") else [{}] * len(documents)
-        distances = results["distances"][0] if results.get("distances") else [0.0] * len(documents)
 
         chunk_texts = []
         source_docs = []
 
-        for doc_text, metadata, distance in zip(documents, metadatas, distances):
-            chunk_texts.append(doc_text)
-            # ChromaDB distance: lower = more similar. Convert to 0-1 relevance score
-            relevance = max(0.0, 1.0 - (distance / 2.0))
+        for result in results:
+            chunk_texts.append(result["content"])
+            # pgvector cosine distance: lower = more similar. Convert to 0-1 relevance score
+            relevance = max(0.0, 1.0 - (result["distance"] / 2.0))
             source_docs.append(ChatSourceDocument(
-                filename=metadata.get("filename", "unknown"),
-                chunk_index=metadata.get("chunk_index", 0),
+                filename=result.get("filename", "unknown"),
+                chunk_index=result.get("chunk_index", 0),
                 relevance_score=round(relevance, 3),
             ))
 

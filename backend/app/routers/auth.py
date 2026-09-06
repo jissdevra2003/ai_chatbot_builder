@@ -1,14 +1,15 @@
+from typing import Tuple
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import create_access_token
-from app.core.dependencies import get_current_user, get_current_org
+from app.core.dependencies import get_current_user, get_current_org, require_roles
 from app.models.user import User
 from app.models.organization import Organization
 from app.models.membership import RoleEnum
 from app.schemas.user import UserCreate, UserLogin, UserResponse
-from app.schemas.organization import UserMeResponse, OrgResponse
+from app.schemas.organization import UserMeResponse, OrgResponse, OrgUpdate
 from app.schemas.token import Token
 from app.services.auth_service import AuthService
 
@@ -62,3 +63,22 @@ def get_me(
         active_organization=OrgResponse.model_validate(active_org),
         role=role
     )
+
+
+@router.patch("/organization", response_model=OrgResponse)
+def update_organization(
+    org_in: OrgUpdate,
+    auth_data: Tuple[User, Organization, RoleEnum] = Depends(require_roles(RoleEnum.OWNER, RoleEnum.ADMIN)),
+    db: Session = Depends(get_db)
+):
+    """Updates active organization details (Requires OWNER or ADMIN role)."""
+    _, active_org, _ = auth_data
+    if not org_in.name.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Organization name cannot be empty."
+        )
+    active_org.name = org_in.name.strip()
+    db.commit()
+    db.refresh(active_org)
+    return active_org

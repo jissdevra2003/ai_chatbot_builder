@@ -5,7 +5,6 @@ from sqlalchemy import select, func
 from app.models.chatbot import Chatbot
 from app.models.document import Document
 from app.schemas.chatbot import ChatbotCreate, ChatbotUpdate
-from app.services.vector_service import VectorService
 
 
 class ChatbotService:
@@ -58,11 +57,8 @@ class ChatbotService:
 
     @classmethod
     def delete_chatbot(cls, db: Session, org_id: str, chatbot_id: str) -> None:
-        """Deletes a chatbot and cascades to documents, chunks, and vectors."""
+        """Deletes a chatbot. Documents and chunks are cascade-deleted via FK."""
         chatbot = cls.get_chatbot(db, org_id, chatbot_id)
-
-        # Delete vector collection for this chatbot
-        VectorService.delete_collection(chatbot_id)
-
         db.delete(chatbot)
         db.commit()
+

@@ -43,6 +43,7 @@ export const authAPI = {
   signup: (data) => api.post('/auth/signup', data),
   login: (data) => api.post('/auth/login', data),
   getMe: () => api.get('/auth/me'),
+  updateOrg: (data) => api.patch('/auth/organization', data),
 };
 
 // --- Chatbots API ---
@@ -56,11 +57,21 @@ export const chatbotsAPI = {
 
 // --- Documents API ---
 export const documentsAPI = {
-  upload: (chatbotId, file) => {
+  /**
+   * Upload a document file with progress tracking and cancellation support.
+   * @param {string} chatbotId
+   * @param {File} file
+   * @param {Object} [options]
+   * @param {function} [options.onUploadProgress] - Axios progress callback ({ loaded, total, progress })
+   * @param {AbortSignal} [options.signal] - AbortController signal for cancellation
+   */
+  upload: (chatbotId, file, { onUploadProgress, signal } = {}) => {
     const formData = new FormData();
     formData.append('file', file);
     return api.post(`/chatbots/${chatbotId}/documents/upload`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress,
+      signal,
     });
   },
   list: (chatbotId) => api.get(`/chatbots/${chatbotId}/documents/`),
@@ -81,8 +92,16 @@ export const chatAPI = {
 export const invitationsAPI = {
   create: (data) => api.post('/invitations/', data),
   list: () => api.get('/invitations/'),
+  listMembers: () => api.get('/invitations/members'),
   getByToken: (token) => api.get(`/invitations/${token}`),
   accept: (data) => api.post('/invitations/accept', data),
+};
+
+// --- Widget API (Public) ---
+export const widgetAPI = {
+  sendMessage: (chatbotId, message, sessionId) =>
+    api.post('/widget/chat', { chatbot_id: chatbotId, message, session_id: sessionId }),
+  getConfig: (chatbotId) => api.get(`/widget/config/${chatbotId}`),
 };
 
 export default api;

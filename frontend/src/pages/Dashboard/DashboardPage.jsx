@@ -35,14 +35,26 @@ export default function DashboardPage() {
 
         {/* Stats */}
         <div className="dashboard-stats">
-          <div className="stat-card">
+          <div
+            className="stat-card stat-card-interactive"
+            onClick={() => navigate('/chatbots')}
+            role="button"
+            tabIndex={0}
+            aria-label="View all chatbots"
+          >
             <div className="stat-card-label">Total Chatbots</div>
             <div className="stat-card-value">
               {isLoading ? '—' : chatbots.length}
             </div>
             <div className="stat-card-hint">Active AI assistants</div>
           </div>
-          <div className="stat-card">
+          <div
+            className="stat-card stat-card-interactive"
+            onClick={() => navigate('/chatbots')}
+            role="button"
+            tabIndex={0}
+            aria-label="View documents"
+          >
             <div className="stat-card-label">Documents</div>
             <div className="stat-card-value">
               {isLoading ? '—' : chatbots.reduce((sum, bot) => sum + (bot.document_count || 0), 0) || '0'}
